@@ -1,0 +1,338 @@
+name: Build and Release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: 6.8.3
+
+jobs:
+  linux:
+    name: Ubuntu x86_64
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: linux_gcc_64
+          cache: true
+          cache-key-prefix: qt-${{ env.QT_VERSION }}-ubuntu-x86_64
+
+      - name: Configure
+        if: github.event_name == 'pull_request'
+        run: >
+          cmake -S . -B build/ci -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+          -DBUILD_TESTING=ON
+
+      - name: Build
+        if: github.event_name == 'pull_request'
+        run: cmake --build build/ci --parallel
+
+      - name: Test
+        if: github.event_name == 'pull_request'
+        run: ctest --test-dir build/ci --output-on-failure
+
+      - name: Build, test, and package
+        if: github.event_name == 'push'
+        run: ./scripts/package_linux.sh
+
+      - name: Upload AppImage
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-ubuntu-x86_64
+          path: dist/MCAP-Slice-Ubuntu-x86_64.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          cache: true
+          cache-key-prefix: qt-${{ env.QT_VERSION }}-windows-x86_64
+
+      - name: Configure
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: >
+          cmake -S . -B build/ci
+          -G "Visual Studio 17 2022"
+          -A x64
+          "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+          -DBUILD_TESTING=ON
+
+      - name: Build
+        if: github.event_name == 'pull_request'
+        run: cmake --build build/ci --config Release --parallel
+
+      - name: Test
+        if: github.event_name == 'pull_request'
+        run: ctest --test-dir build/ci -C Release --output-on-failure
+
+      - name: Build, test, and package
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: ./scripts/package_windows.ps1
+
+      - name: Upload ZIP
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-windows-x86_64
+          path: dist/MCAP-Slice-Windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: clang_64
+          cache: true
+          cache-key-prefix: qt-${{ env.QT_VERSION }}-macos-${{ matrix.arch }}
+
+      - name: Configure
+        if: github.event_name == 'pull_request'
+        run: >
+          cmake -S . -B build/ci
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          -DBUILD_TESTING=ON
+
+      - name: Build
+        if: github.event_name == 'pull_request'
+        run: cmake --build build/ci --parallel
+
+      - name: Test
+        if: github.event_name == 'pull_request'
+        run: ctest --test-dir build/ci --output-on-failure
+
+      - name: Import signing credentials
+        if: github.event_name == 'push'
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ vars.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ vars.APPLE_NOTARY_ISSUER_ID }}
+          SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+        run: |
+          if [[ -z "$CERTIFICATE_BASE64" ||
+                -z "$CERTIFICATE_PASSWORD" ||
+                -z "$NOTARY_KEY_BASE64" ||
+                -z "$NOTARY_KEY_ID" ||
+                -z "$NOTARY_ISSUER_ID" ||
+                -z "$SIGNING_IDENTITY" ]]; then
+            echo "The macOS signing secrets or variables are incomplete." >&2
+            exit 1
+          fi
+
+          certificate_path="$RUNNER_TEMP/mcap-slice-signing.p12"
+          keychain_path="$RUNNER_TEMP/mcap-slice-signing.keychain-db"
+          notary_key_path="$RUNNER_TEMP/AuthKey_${NOTARY_KEY_ID}.p8"
+          keychain_password="$(openssl rand -hex 32)"
+
+          printf '%s' "$CERTIFICATE_BASE64" |
+            openssl base64 -d -A -out "$certificate_path"
+          printf '%s' "$NOTARY_KEY_BASE64" |
+            openssl base64 -d -A -out "$notary_key_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path"
+
+          existing_keychains=()
+          while IFS= read -r existing_keychain; do
+            existing_keychain="${existing_keychain#*\"}"
+            existing_keychain="${existing_keychain%%\"*}"
+            existing_keychains+=("$existing_keychain")
+          done < <(security list-keychains -d user)
+          security list-keychains \
+            -d user \
+            -s "$keychain_path" "${existing_keychains[@]}"
+          security find-identity -v -p codesigning "$keychain_path" |
+            grep -F "$SIGNING_IDENTITY"
+
+          echo "SIGNING_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+          echo "APPLE_NOTARY_KEY_PATH=$notary_key_path" >> "$GITHUB_ENV"
+
+      - name: Build, test, sign, notarize, and package
+        if: github.event_name == 'push'
+        env:
+          MACOS_ARCH_LABEL: ${{ matrix.arch }}
+          MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          APPLE_NOTARY_KEY_ID: ${{ vars.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ vars.APPLE_NOTARY_ISSUER_ID }}
+        run: ./scripts/package_macos.sh
+
+      - name: Upload DMG
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: dist/MCAP-Slice-macOS-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove signing credentials
+        if: always() && github.event_name == 'push'
+        run: |
+          security delete-keychain \
+            "$RUNNER_TEMP/mcap-slice-signing.keychain-db" 2>/dev/null || true
+          rm -f \
+            "$RUNNER_TEMP/mcap-slice-signing.p12" \
+            "$RUNNER_TEMP"/AuthKey_*.p8
+
+  release:
+    name: Update Continuous Release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - linux
+      - windows
+      - macos
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    concurrency:
+      group: continuous-release
+      cancel-in-progress: false
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify source is still current
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$current_sha" == "$GITHUB_SHA" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping stale build $GITHUB_SHA; main is $current_sha."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate assets and create checksums
+        if: steps.current.outputs.publish == 'true'
+        working-directory: release-assets
+        run: |
+          assets=(
+            MCAP-Slice-Ubuntu-x86_64.AppImage
+            MCAP-Slice-Windows-x86_64.zip
+            MCAP-Slice-macOS-arm64.dmg
+            MCAP-Slice-macOS-x86_64.dmg
+          )
+          for asset in "${assets[@]}"; do
+            if [[ ! -s "$asset" ]]; then
+              echo "Missing release asset: $asset" >&2
+              exit 1
+            fi
+          done
+          sha256sum "${assets[@]}" > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Update rolling prerelease
+        if: steps.current.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh api \
+            "repos/$GITHUB_REPOSITORY/git/ref/tags/continuous" \
+            >/dev/null 2>&1; then
+            gh api \
+              --method PATCH \
+              "repos/$GITHUB_REPOSITORY/git/refs/tags/continuous" \
+              -f sha="$GITHUB_SHA" \
+              -F force=true \
+              >/dev/null
+          else
+            gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/continuous" \
+              -f sha="$GITHUB_SHA" \
+              >/dev/null
+          fi
+
+          short_sha="${GITHUB_SHA:0:7}"
+          built_at="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          printf '%s\n\n%s\n\n%s\n' \
+            "Rolling build from [\`${short_sha}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})." \
+            "Built at ${built_at}." \
+            "Assets are replaced after every successful build of \`main\`." \
+            > release-notes.md
+
+          if gh release view continuous >/dev/null 2>&1; then
+            gh release edit continuous \
+              --title "Continuous" \
+              --prerelease \
+              --notes-file release-notes.md
+          else
+            gh release create continuous \
+              --title "Continuous" \
+              --prerelease \
+              --verify-tag \
+              --notes-file release-notes.md
+          fi
+
+          gh release upload continuous \
+            release-assets/MCAP-Slice-Ubuntu-x86_64.AppImage \
+            release-assets/MCAP-Slice-Windows-x86_64.zip \
+            release-assets/MCAP-Slice-macOS-arm64.dmg \
+            release-assets/MCAP-Slice-macOS-x86_64.dmg \
+            release-assets/SHA256SUMS.txt \
+            --clobber

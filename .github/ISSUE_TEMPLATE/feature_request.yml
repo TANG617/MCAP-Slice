@@ -1,0 +1,68 @@
+name: Feature request
+description: Propose an improvement to an MCAP Slice workflow
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the workflow problem before proposing an implementation.
+        Search existing issues first and do not include private recording data.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Workflow problem
+      description: What are you trying to do, and what prevents it today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the observable behavior that would solve the problem.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Product area
+      options:
+        - File and folder navigation
+        - Time range editing
+        - Video preview
+        - Topic selection
+        - Export and compression
+        - Metadata and provenance
+        - Platform packaging
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: MCAP compatibility considerations
+      description: |
+        If relevant, explain how this should behave with existing files, time
+        boundaries, duplicate topics, Metadata, attachments, or repeated slices.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any workaround or alternative workflow you tried.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find the same request.
+          required: true
+        - label: This request does not include private or proprietary recording data.
+          required: true

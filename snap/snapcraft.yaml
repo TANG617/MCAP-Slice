@@ -1,19 +1,19 @@
-name: mcap-editor
-adopt-info: mcap-editor
-summary: MCAP editor (GUI)
+name: mcap-slice
+adopt-info: mcap-slice
+summary: Trim and filter MCAP recordings
 description: |
-  A GUI to edit your MCAP files.
+  A lightweight standalone GUI to trim and filter MCAP files.
 
-issues: https://github.com/facontidavide/mcap_editor/issues
-source-code: https://github.com/facontidavide/mcap_editor
+issues: https://github.com/TANG617/MCAP-Slice/issues
+source-code: https://github.com/TANG617/MCAP-Slice
 license: MIT
 
 confinement: strict
 base: core22
 
 apps:
-  mcap-editor:
-    command: usr/bin/mcap_editor
+  mcap-slice:
+    command: usr/bin/mcap-slice
     plugs:
       - desktop
       - desktop-legacy
@@ -26,7 +26,7 @@ apps:
       QT_PLUGIN_PATH: ${SNAP}/usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_FOR}/qt6/plugins/
 
 parts:
-  mcap-editor:
+  mcap-slice:
     plugin: cmake
     source: .
     cmake-parameters:

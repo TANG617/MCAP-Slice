@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+
+# Local build and IDE state
+/build/
+/dist/
+CMakeLists.txt.user
+.DS_Store

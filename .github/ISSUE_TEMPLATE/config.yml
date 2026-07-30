@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: User Guide and troubleshooting
+    url: https://github.com/TANG617/MCAP-Slice/blob/main/docs/USER_GUIDE.md
+    about: Check the documented workflow and common error cases before filing.
+  - name: Security vulnerability
+    url: https://github.com/TANG617/MCAP-Slice/security/advisories/new
+    about: Report suspected vulnerabilities privately instead of opening an issue.
+  - name: Support policy
+    url: https://github.com/TANG617/MCAP-Slice/blob/main/SUPPORT.md
+    about: Learn what information makes a support request actionable.
