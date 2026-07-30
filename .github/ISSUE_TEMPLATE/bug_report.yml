@@ -1,0 +1,97 @@
+name: Bug report
+description: Report a reproducible problem in MCAP Slice
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve MCAP Slice. Do not attach private recordings,
+        credentials, personal information, or confidential vulnerability details.
+        Security reports belong in the repository's private vulnerability reporting.
+
+  - type: input
+    id: version
+    attributes:
+      label: Application version
+      description: Find this in the package name or application metadata.
+      placeholder: For example, a release name or commit SHA
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS — Apple Silicon
+        - macOS — Intel
+        - Windows — x86_64
+        - Ubuntu — AppImage
+        - Ubuntu — source build
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: platform_version
+    attributes:
+      label: Operating system version
+      placeholder: For example, macOS 15.5 or Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: Describe what happened and why it is a problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Export ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: recording
+    attributes:
+      label: Recording characteristics
+      description: |
+        Describe only non-sensitive properties: approximate size, profile,
+        compression, relevant schemas/topics, video encoding, top-level Metadata,
+        and whether duplicate topic names exist.
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste relevant error text after removing private paths and data.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed usernames, absolute paths, credentials, and private recording data.
+          required: true
+        - label: This is not a confidential security vulnerability.
+          required: true

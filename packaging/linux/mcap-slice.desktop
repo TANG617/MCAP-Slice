@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=MCAP Slice
+Comment=Trim and filter MCAP recordings
+Exec=mcap-slice %F
+Icon=mcap-slice
+Terminal=false
+Categories=Utility;AudioVideo;
+StartupNotify=true

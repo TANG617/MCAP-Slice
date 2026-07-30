@@ -1,5 +1,5 @@
 <RCC>
     <qresource prefix="/">
-        <file>arrow.svg</file>
+        <file>mcap_slice.png</file>
     </qresource>
 </RCC>
