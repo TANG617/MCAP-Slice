@@ -24,7 +24,7 @@ jobs:
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
           version: ${{ env.QT_VERSION }}
-          arch: gcc_64
+          arch: linux_gcc_64
           cache: true
           cache-key-prefix: qt-${{ env.QT_VERSION }}-ubuntu-x86_64
 
