@@ -6,6 +6,15 @@ export interface DecodedCompressedImage {
   data: Uint8Array;
 }
 
+export interface DecodedJointState {
+  captureTimeNs: bigint;
+  frameId: string;
+  names: string[];
+  positions: number[];
+  velocities: number[];
+  efforts: number[];
+}
+
 class CdrReader {
   readonly #data: Uint8Array;
   readonly #view: DataView;
@@ -30,6 +39,22 @@ class CdrReader {
     this.#require(4);
     const result = this.#view.getUint32(this.#offset, this.#littleEndian);
     this.#offset += 4;
+    return result;
+  }
+
+  public readI32(): number {
+    this.#align(4);
+    this.#require(4);
+    const result = this.#view.getInt32(this.#offset, this.#littleEndian);
+    this.#offset += 4;
+    return result;
+  }
+
+  public readF64(): number {
+    this.#align(8);
+    this.#require(8);
+    const result = this.#view.getFloat64(this.#offset, this.#littleEndian);
+    this.#offset += 8;
     return result;
   }
 
@@ -61,6 +86,26 @@ class CdrReader {
     return result;
   }
 
+  public readStringSequence(fieldName: string): string[] {
+    const length = this.readU32();
+    this.#validateSequenceLength(length, 4, fieldName);
+    const result: string[] = [];
+    for (let index = 0; index < length; index += 1) {
+      result.push(this.readString(`${fieldName}[${index}]`));
+    }
+    return result;
+  }
+
+  public readF64Sequence(fieldName: string): number[] {
+    const length = this.readU32();
+    this.#validateSequenceLength(length, 8, fieldName);
+    const result = new Array<number>(length);
+    for (let index = 0; index < length; index += 1) {
+      result[index] = this.readF64();
+    }
+    return result;
+  }
+
   #align(alignment: number): void {
     const payloadOffset = this.#offset - 4;
     const padding = (alignment - (payloadOffset % alignment)) % alignment;
@@ -71,6 +116,12 @@ class CdrReader {
   #require(count: number): void {
     if (count < 0 || this.#offset > this.#data.byteLength || count > this.#data.byteLength - this.#offset) {
       throw new Error("Unexpected end of CDR message.");
+    }
+  }
+
+  #validateSequenceLength(length: number, minimumBytes: number, fieldName: string): void {
+    if (length > 1_000_000 || length * minimumBytes > this.#data.byteLength) {
+      throw new Error(`${fieldName} has an invalid CDR sequence length.`);
     }
   }
 }
@@ -88,8 +139,7 @@ function detectMimeType(data: Uint8Array): "image/jpeg" | "image/png" {
 
 export function decodeRos2CompressedImage(data: Uint8Array): DecodedCompressedImage {
   const reader = new CdrReader(data);
-  const secondsUnsigned = reader.readU32();
-  const seconds = secondsUnsigned > 0x7fffffff ? secondsUnsigned - 0x1_0000_0000 : secondsUnsigned;
+  const seconds = reader.readI32();
   const nanoseconds = reader.readU32();
   const frameId = reader.readString("header.frame_id");
   const format = reader.readString("format");
@@ -106,5 +156,40 @@ export function decodeRos2CompressedImage(data: Uint8Array): DecodedCompressedIm
     format,
     mimeType: detectMimeType(encodedImage),
     data: encodedImage
+  };
+}
+
+export function decodeRos2JointState(data: Uint8Array): DecodedJointState {
+  const reader = new CdrReader(data);
+  const seconds = reader.readI32();
+  const nanoseconds = reader.readU32();
+  const frameId = reader.readString("header.frame_id");
+  const names = reader.readStringSequence("name");
+  const positions = reader.readF64Sequence("position");
+  const velocities = reader.readF64Sequence("velocity");
+  const efforts = reader.readF64Sequence("effort");
+
+  if (nanoseconds >= 1_000_000_000) {
+    throw new Error("header.stamp.nanosec is outside [0, 1e9).");
+  }
+  if (names.length !== positions.length) {
+    throw new Error(`JointState name and position lengths differ (${names.length} vs ${positions.length}).`);
+  }
+  for (const [fieldName, values] of [["velocity", velocities], ["effort", efforts]] as const) {
+    if (values.length !== 0 && values.length !== names.length) {
+      throw new Error(`JointState ${fieldName} length must be empty or match name length.`);
+    }
+  }
+  if (positions.some((value) => !Number.isFinite(value))) {
+    throw new Error("JointState position contains a non-finite value.");
+  }
+
+  return {
+    captureTimeNs: BigInt(seconds) * 1_000_000_000n + BigInt(nanoseconds),
+    frameId,
+    names,
+    positions,
+    velocities,
+    efforts
   };
 }

@@ -20,6 +20,13 @@ function appendU32(bytes: number[], value: number, littleEndian: boolean): void 
   bytes.push(...new Uint8Array(view.buffer));
 }
 
+function appendF64(bytes: number[], value: number, littleEndian: boolean): void {
+  align(bytes, 8);
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, value, littleEndian);
+  bytes.push(...new Uint8Array(view.buffer));
+}
+
 function align(bytes: number[], alignment: number): void {
   const payloadOffset = bytes.length - 4;
   const padding = (alignment - (payloadOffset % alignment)) % alignment;
@@ -43,6 +50,29 @@ export function compressedImageCdr(littleEndian = true, image = ONE_PIXEL_PNG): 
   align(bytes, 4);
   appendU32(bytes, image.byteLength, littleEndian);
   bytes.push(...image);
+  return Uint8Array.from(bytes);
+}
+
+export function jointStateCdr(
+  littleEndian = true,
+  names = ["shoulder", "slide"],
+  positions = [0.25, 0.05],
+  velocities: number[] = [],
+  efforts: number[] = []
+): Uint8Array {
+  const bytes = [0, littleEndian ? 1 : 0, 0, 0];
+  align(bytes, 4);
+  appendU32(bytes, 1_700_000_000, littleEndian);
+  appendU32(bytes, 456_000_000, littleEndian);
+  appendString(bytes, "base_link", littleEndian);
+  align(bytes, 4);
+  appendU32(bytes, names.length, littleEndian);
+  names.forEach((name) => appendString(bytes, name, littleEndian));
+  for (const values of [positions, velocities, efforts]) {
+    align(bytes, 4);
+    appendU32(bytes, values.length, littleEndian);
+    values.forEach((value) => appendF64(bytes, value, littleEndian));
+  }
   return Uint8Array.from(bytes);
 }
 
@@ -73,10 +103,19 @@ export async function writeIndexedFixture(filePath: string, messageCopies = 1): 
       encoding: "ros2msg",
       data: new TextEncoder().encode("std_msgs/Header header\nstring format\nuint8[] data\n")
     });
+    const jointStateSchemaId = await writer.registerSchema({
+      name: "sensor_msgs/msg/JointState",
+      encoding: "ros2msg",
+      data: new TextEncoder().encode(
+        "std_msgs/Header header\nstring[] name\nfloat64[] position\nfloat64[] velocity\nfloat64[] effort\n"
+      )
+    });
     const duplicateA = await writer.registerChannel({ schemaId: jsonSchemaId, topic: "/duplicate", messageEncoding: "json", metadata: new Map([["source", "a"]]) });
     const duplicateB = await writer.registerChannel({ schemaId: jsonSchemaId, topic: "/duplicate", messageEncoding: "json", metadata: new Map([["source", "b"]]) });
     const other = await writer.registerChannel({ schemaId: jsonSchemaId, topic: "/other", messageEncoding: "json", metadata: new Map() });
     const video = await writer.registerChannel({ schemaId: imageSchemaId, topic: "/camera/color/compressed", messageEncoding: "cdr", metadata: new Map() });
+    const jointState = await writer.registerChannel({ schemaId: jointStateSchemaId, topic: "/joint_states", messageEncoding: "cdr", metadata: new Map() });
+    const alternateJointState = await writer.registerChannel({ schemaId: jointStateSchemaId, topic: "/arm/joint_states", messageEncoding: "cdr", metadata: new Map() });
     let sequence = 0;
     for (let copy = 0; copy < messageCopies; copy += 1) {
       const offset = BigInt(copy) * 4_000_000n;
@@ -96,6 +135,29 @@ export async function writeIndexedFixture(filePath: string, messageCopies = 1): 
         logTime: jpegTimestamp,
         publishTime: jpegTimestamp,
         data: compressedImageCdr(true, ONE_PIXEL_JPEG)
+      });
+      const alternateJointTimestamp = BASE_TIME_NS + offset + 3_625_000n;
+      await writer.addMessage({
+        channelId: alternateJointState,
+        sequence: sequence++,
+        logTime: alternateJointTimestamp,
+        publishTime: alternateJointTimestamp,
+        data: jointStateCdr(true, ["shoulder"], [-0.25 - copy])
+      });
+      const jointTimestamp = BASE_TIME_NS + offset + 3_750_000n;
+      await writer.addMessage({
+        channelId: jointState,
+        sequence: sequence++,
+        logTime: jointTimestamp,
+        publishTime: jointTimestamp,
+        data: jointStateCdr(true, undefined, [0.25 + copy, 0.05])
+      });
+      await writer.addMessage({
+        channelId: jointState,
+        sequence: sequence++,
+        logTime: jointTimestamp,
+        publishTime: jointTimestamp,
+        data: jointStateCdr(true, undefined, [0.5 + copy, 0.1])
       });
     }
     await writer.addMetadata({ name: "source.metadata", metadata: new Map([["key", "value"]]) });

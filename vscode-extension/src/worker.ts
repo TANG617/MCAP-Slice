@@ -9,7 +9,7 @@ import { McapIndexedReader, McapWriter, type Metadata } from "@mcap/core";
 import { FileHandleReadable, FileHandleWritable } from "@mcap/nodejs";
 import * as lz4 from "lz4js";
 
-import { decodeRos2CompressedImage } from "./shared/cdr";
+import { decodeRos2CompressedImage, decodeRos2JointState } from "./shared/cdr";
 import { loadMcapDecompressHandlers } from "./shared/decompress";
 import { buildProvenance } from "./shared/provenance";
 import type {
@@ -18,6 +18,8 @@ import type {
   RecordingSummary,
   SchemaSummary,
   WorkerFrameResult,
+  WorkerJointStateIndexResult,
+  WorkerJointStateReadResult,
   WorkerRequest,
   WorkerResponse,
   WorkerVideoIndexResult
@@ -31,6 +33,18 @@ interface VideoFrameInfo {
   logTime: bigint;
   publishTime: bigint;
   sequence: number;
+}
+
+interface TimestampEntry {
+  logTime: bigint;
+  publishTime: bigint;
+  sequence: number;
+}
+
+interface TimestampIndex {
+  logTimes: BigUint64Array;
+  publishTimes: BigUint64Array;
+  sequences: Uint32Array;
 }
 
 interface LoadedSource {
@@ -47,7 +61,23 @@ interface LoadedSource {
 let currentGeneration = 0;
 let source: LoadedSource | undefined;
 const videoFrames = new Map<number, VideoFrameInfo[]>();
+const jointStateIndexes = new Map<number, TimestampIndex>();
 const canceledOperations = new Set<string>();
+let readerOperationTail = Promise.resolve();
+
+async function withReaderLock<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = readerOperationTail;
+  let release: () => void = () => undefined;
+  readerOperationTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
 
 function post(message: WorkerResponse): void {
   parentPort!.postMessage(message);
@@ -55,7 +85,7 @@ function post(message: WorkerResponse): void {
 
 function progress(
   request: WorkerRequest,
-  operation: "load" | "videoIndex" | "export",
+  operation: "load" | "videoIndex" | "jointStateIndex" | "export",
   message: string,
   value?: number
 ): void {
@@ -86,6 +116,7 @@ async function closeSource(): Promise<void> {
   const previous = source;
   source = undefined;
   videoFrames.clear();
+  jointStateIndexes.clear();
   if (previous) {
     await previous.handle.close().catch(() => undefined);
   }
@@ -188,6 +219,20 @@ async function loadRecording(request: Extract<WorkerRequest, { type: "load" }>):
       .sort((left, right) => preferredVideoOrder(right) - preferredVideoOrder(left) || left.topic.localeCompare(right.topic))
       .map((channel) => ({ channelId: channel.id, topic: channel.topic }));
 
+    const jointStateStreams = channels
+      .filter(
+        (channel) =>
+          channel.schemaName === "sensor_msgs/msg/JointState" &&
+          channel.messageEncoding === "cdr"
+      )
+      .sort(
+        (left, right) =>
+          Number(right.topic === "/joint_states") - Number(left.topic === "/joint_states") ||
+          left.topic.localeCompare(right.topic) ||
+          left.id - right.id
+      )
+      .map((channel) => ({ channelId: channel.id, topic: channel.topic }));
+
     const summary: RecordingSummary = {
       sourceName: path.basename(request.path),
       sourceSizeBytes: BigInt(fileStat.size).toString(),
@@ -201,6 +246,7 @@ async function loadRecording(request: Extract<WorkerRequest, { type: "load" }>):
       channels,
       schemas,
       videoStreams,
+      jointStateStreams,
       attachmentCount: statistics.attachmentCount,
       metadataCount: statistics.metadataCount,
       metadataError
@@ -335,6 +381,123 @@ function seekFrame(request: Extract<WorkerRequest, { type: "seekFrame" }>): numb
   return Math.max(0, low - 1);
 }
 
+async function indexJointStates(
+  request: Extract<WorkerRequest, { type: "indexJointStates" }>
+): Promise<WorkerJointStateIndexResult> {
+  const loaded = ensureCurrent(request);
+  const channel = loaded.reader.channelsById.get(request.channelId);
+  if (!channel) {
+    throw new Error("The selected JointState channel no longer exists.");
+  }
+  const schema = loaded.reader.schemasById.get(channel.schemaId);
+  if (schema?.name !== "sensor_msgs/msg/JointState" || channel.messageEncoding !== "cdr") {
+    throw new Error("The selected channel is not a ROS 2 CDR sensor_msgs/msg/JointState stream.");
+  }
+
+  progress(request, "jointStateIndex", `Indexing ${channel.topic}…`, 0);
+  const entries: TimestampEntry[] = [];
+  const expected = loaded.reader.statistics?.channelMessageCounts.get(channel.id) ?? 0n;
+  let visited = 0;
+  for await (const message of loaded.reader.readMessages({ topics: [channel.topic], validateCrcs: true })) {
+    ensureNotCanceled(request.requestId);
+    ensureCurrent(request);
+    if (message.channelId !== channel.id) {
+      continue;
+    }
+    entries.push({ logTime: message.logTime, publishTime: message.publishTime, sequence: message.sequence });
+    visited += 1;
+    if (visited % 1_000 === 0) {
+      const ratio = expected > 0n ? Math.min(1, visited / Number(expected)) : undefined;
+      progress(request, "jointStateIndex", `Indexed ${visited.toLocaleString()} JointState messages…`, ratio);
+    }
+  }
+
+  entries.sort(
+    (left, right) =>
+      compareBigInt(left.logTime, right.logTime) ||
+      left.sequence - right.sequence ||
+      compareBigInt(left.publishTime, right.publishTime)
+  );
+  const logTimes = new BigUint64Array(entries.length);
+  const publishTimes = new BigUint64Array(entries.length);
+  const sequences = new Uint32Array(entries.length);
+  entries.forEach((entry, index) => {
+    logTimes[index] = entry.logTime;
+    publishTimes[index] = entry.publishTime;
+    sequences[index] = entry.sequence;
+  });
+  jointStateIndexes.set(channel.id, { logTimes, publishTimes, sequences });
+  progress(request, "jointStateIndex", `Indexed ${entries.length.toLocaleString()} JointState messages`, 1);
+  return {
+    channelId: channel.id,
+    messageCount: entries.length,
+    firstLogTimeNs: entries[0]?.logTime.toString(),
+    lastLogTimeNs: entries.at(-1)?.logTime.toString()
+  };
+}
+
+async function readJointStateAt(
+  request: Extract<WorkerRequest, { type: "readJointStateAt" }>
+): Promise<WorkerJointStateReadResult> {
+  const loaded = ensureCurrent(request);
+  const index = jointStateIndexes.get(request.channelId);
+  if (!index || index.logTimes.length === 0) {
+    throw new Error("The selected JointState stream has not been indexed.");
+  }
+  const target = BigInt(request.timestampNs);
+  if (target < index.logTimes[0]!) {
+    return { state: "noState", channelId: request.channelId };
+  }
+
+  let low = 0;
+  let high = index.logTimes.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (index.logTimes[middle]! <= target) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  const entryIndex = low - 1;
+  const logTime = index.logTimes[entryIndex]!;
+  const publishTime = index.publishTimes[entryIndex]!;
+  const sequence = index.sequences[entryIndex]!;
+  const channel = loaded.reader.channelsById.get(request.channelId);
+  if (!channel) {
+    throw new Error("The selected JointState channel no longer exists.");
+  }
+
+  const endTime = logTime < 0xffff_ffff_ffff_ffffn ? logTime + 1n : undefined;
+  for await (const message of loaded.reader.readMessages({
+    topics: [channel.topic],
+    startTime: logTime,
+    ...(endTime === undefined ? {} : { endTime }),
+    validateCrcs: true
+  })) {
+    if (
+      message.channelId !== request.channelId ||
+      message.logTime !== logTime ||
+      message.publishTime !== publishTime ||
+      message.sequence !== sequence
+    ) {
+      continue;
+    }
+    const decoded = decodeRos2JointState(message.data);
+    return {
+      state: "ready",
+      channelId: request.channelId,
+      logTimeNs: message.logTime.toString(),
+      publishTimeNs: message.publishTime.toString(),
+      captureTimeNs: decoded.captureTimeNs.toString(),
+      sequence: message.sequence,
+      names: decoded.names,
+      positions: decoded.positions
+    };
+  }
+  throw new Error("The indexed JointState message could not be found in the recording.");
+}
+
 function compressor(compression: Compression): ((data: Uint8Array) => { compression: string; compressedData: Uint8Array }) | undefined {
   if (compression === "none") {
     return undefined;
@@ -411,7 +574,6 @@ async function exportSlice(request: Extract<WorkerRequest, { type: "export" }>):
   const tempPath = path.join(path.dirname(destinationPath), `.${path.basename(destinationPath)}.mcap-slice-${randomUUID()}.tmp`);
   let outputHandle: Awaited<ReturnType<typeof open>> | undefined;
   let committed = false;
-  canceledOperations.delete(request.requestId);
   try {
     progress(request, "export", "Preparing output…", 0);
     if (request.compression === "zstd") {
@@ -534,22 +696,31 @@ function errorMessage(error: unknown): string {
 
 async function handleRequest(request: WorkerRequest): Promise<unknown> {
   switch (request.type) {
-    case "load":
-      return await loadRecording(request);
-    case "indexVideo":
-      return await indexVideo(request);
-    case "readFrame":
-      return await readFrame(request);
     case "seekFrame":
       return { frameIndex: seekFrame(request) };
-    case "export":
-      return await exportSlice(request);
     case "cancel":
       canceledOperations.add(request.operationId);
       return {};
-    case "dispose":
-      await closeSource();
-      return {};
+    default:
+      return await withReaderLock(async () => {
+        switch (request.type) {
+          case "load":
+            return await loadRecording(request);
+          case "indexVideo":
+            return await indexVideo(request);
+          case "readFrame":
+            return await readFrame(request);
+          case "indexJointStates":
+            return await indexJointStates(request);
+          case "readJointStateAt":
+            return await readJointStateAt(request);
+          case "export":
+            return await exportSlice(request);
+          case "dispose":
+            await closeSource();
+            return {};
+        }
+      });
   }
 }
 

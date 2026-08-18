@@ -27,6 +27,8 @@ async function run() {
   const commands = await vscode.commands.getCommands(true);
   assert.ok(commands.includes("mcapSlice.exportSlice"));
   assert.ok(commands.includes("mcapSlice.reloadSource"));
+  assert.ok(commands.includes("mcapSlice.selectUrdf"));
+  assert.ok(commands.includes("mcapSlice.clearRobotAssetCache"));
   assert.ok(commands.includes("mcapSlice._testState"));
 
   const uri = vscode.Uri.file(fixturePath);

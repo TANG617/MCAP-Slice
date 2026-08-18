@@ -97,16 +97,25 @@ describe("MCAP worker", () => {
     await writeIndexedFixture(source);
     const harness = new WorkerHarness();
     try {
-      const loaded = await harness.call<{ recording: { attachmentCount: number; metadataCount: number; channels: unknown[]; videoStreams: { channelId: number }[] } }>({
+      const loaded = await harness.call<{ recording: { attachmentCount: number; metadataCount: number; channels: unknown[]; videoStreams: { channelId: number }[]; jointStateStreams: { channelId: number; topic: string }[] } }>({
         type: "load", requestId: "load", generation: 1, path: source
       });
       expect(loaded.recording.attachmentCount).toBe(1);
       expect(loaded.recording.metadataCount).toBe(1);
-      expect(loaded.recording.channels).toHaveLength(4);
+      expect(loaded.recording.channels).toHaveLength(6);
       expect(loaded.recording.videoStreams).toHaveLength(1);
+      expect(loaded.recording.jointStateStreams).toHaveLength(2);
+      expect(loaded.recording.jointStateStreams[0]?.topic).toBe("/joint_states");
       const channelId = loaded.recording.videoStreams[0]!.channelId;
-      const index = await harness.call<{ frameCount: number }>({ type: "indexVideo", requestId: "index", generation: 1, channelId });
+      const jointChannelId = loaded.recording.jointStateStreams[0]!.channelId;
+      const [index, jointIndex] = await Promise.all([
+        harness.call<{ frameCount: number }>({ type: "indexVideo", requestId: "index", generation: 1, channelId }),
+        harness.call<{ messageCount: number; firstLogTimeNs: string }>({
+          type: "indexJointStates", requestId: "joint-index", generation: 1, channelId: jointChannelId
+        })
+      ]);
       expect(index.frameCount).toBe(2);
+      expect(jointIndex.messageCount).toBe(2);
       const frame = await harness.call<{ mimeType: string; frameId: string; image: Uint8Array }>({
         type: "readFrame", requestId: "frame", generation: 1, channelId, frameIndex: 0
       });
@@ -129,10 +138,136 @@ describe("MCAP worker", () => {
         frameIndex: sought.frameIndex
       });
       expect(jpeg.mimeType).toBe("image/jpeg");
+
+      const before = await harness.call<{ state: string }>({
+        type: "readJointStateAt",
+        requestId: "joint-before",
+        generation: 1,
+        channelId: jointChannelId,
+        timestampNs: (BigInt(jointIndex.firstLogTimeNs) - 1n).toString()
+      });
+      expect(before.state).toBe("noState");
+      const joints = await harness.call<{ state: string; names: string[]; positions: number[] }>({
+        type: "readJointStateAt",
+        requestId: "joint-read",
+        generation: 1,
+        channelId: jointChannelId,
+        timestampNs: (BASE_TIME_NS + 10_000_000n).toString()
+      });
+      expect(joints).toMatchObject({ state: "ready", names: ["shoulder", "slide"], positions: [0.5, 0.1] });
+
+      const alternateChannelId = loaded.recording.jointStateStreams[1]!.channelId;
+      await harness.call({ type: "indexJointStates", requestId: "alternate-index", generation: 1, channelId: alternateChannelId });
+      const alternate = await harness.call<{ state: string; names: string[]; positions: number[] }>({
+        type: "readJointStateAt",
+        requestId: "alternate-read",
+        generation: 1,
+        channelId: alternateChannelId,
+        timestampNs: (BASE_TIME_NS + 10_000_000n).toString()
+      });
+      expect(alternate).toMatchObject({ state: "ready", names: ["shoulder"], positions: [-0.25] });
     } finally {
       await harness.dispose();
     }
   });
+
+  it.skipIf(!process.env.MCAP_SLICE_REAL_MCAP || !process.env.MCAP_SLICE_REAL_URDF)(
+    "synchronizes a real video frame with the matching robot JointState by log_time",
+    async () => {
+      const harness = new WorkerHarness();
+      try {
+        const loaded = await harness.call<{
+          recording: {
+            videoStreams: { channelId: number; topic: string }[];
+            jointStateStreams: { channelId: number; topic: string }[];
+          };
+        }>({
+          type: "load",
+          requestId: "real-load",
+          generation: 1,
+          path: process.env.MCAP_SLICE_REAL_MCAP!
+        });
+        const video = loaded.recording.videoStreams.find(
+          (stream) => stream.topic === "/hal/camera/head/color/compressed"
+        ) ?? loaded.recording.videoStreams[0];
+        const jointTopic = process.env.MCAP_SLICE_REAL_JOINT_TOPIC ?? "/hal/joint_states";
+        const joints = loaded.recording.jointStateStreams.find(
+          (stream) => stream.topic === jointTopic
+        );
+        expect(video).toBeDefined();
+        expect(joints).toBeDefined();
+
+        const [videoIndex] = await Promise.all([
+          harness.call<{ frameCount: number }>({
+            type: "indexVideo",
+            requestId: "real-video-index",
+            generation: 1,
+            channelId: video!.channelId
+          }),
+          harness.call({
+            type: "indexJointStates",
+            requestId: "real-joint-index",
+            generation: 1,
+            channelId: joints!.channelId
+          })
+        ]);
+        const frame = await harness.call<{ logTimeNs: string }>({
+          type: "readFrame",
+          requestId: "real-frame",
+          generation: 1,
+          channelId: video!.channelId,
+          frameIndex: Math.floor(videoIndex.frameCount / 2)
+        });
+        const configuration = await harness.call<{
+          state: string;
+          logTimeNs: string;
+          names: string[];
+          positions: number[];
+        }>({
+          type: "readJointStateAt",
+          requestId: "real-joint-read",
+          generation: 1,
+          channelId: joints!.channelId,
+          timestampNs: frame.logTimeNs
+        });
+        expect(configuration.state).toBe("ready");
+        expect(BigInt(configuration.logTimeNs)).toBeLessThanOrEqual(BigInt(frame.logTimeNs));
+        expect(configuration.names).toHaveLength(configuration.positions.length);
+
+        const urdf = await readFile(process.env.MCAP_SLICE_REAL_URDF!, "utf8");
+        const urdfJoints = new Set([...urdf.matchAll(/<joint\s+name="([^"]+)"/g)].map((match) => match[1]!));
+        const matched = configuration.names.filter((name) => urdfJoints.has(name));
+        expect(matched.length).toBeGreaterThan(10);
+
+        const laterFrame = await harness.call<{ logTimeNs: string }>({
+          type: "readFrame",
+          requestId: "real-later-frame",
+          generation: 1,
+          channelId: video!.channelId,
+          frameIndex: Math.floor(videoIndex.frameCount * 0.8)
+        });
+        const laterConfiguration = await harness.call<{
+          state: string;
+          positions: number[];
+        }>({
+          type: "readJointStateAt",
+          requestId: "real-later-joint-read",
+          generation: 1,
+          channelId: joints!.channelId,
+          timestampNs: laterFrame.logTimeNs
+        });
+        expect(laterConfiguration.state).toBe("ready");
+        expect(
+          laterConfiguration.positions.some(
+            (position, index) => Math.abs(position - configuration.positions[index]!) > 1e-6
+          )
+        ).toBe(true);
+      } finally {
+        await harness.dispose();
+      }
+    },
+    10 * 60_000
+  );
 
   it.each(["none", "zstd", "lz4"] as Compression[])("exports a valid %s slice without modifying the source", async (compression) => {
     const directory = await tempDirectory();

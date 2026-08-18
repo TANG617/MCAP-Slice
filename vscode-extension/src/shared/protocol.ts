@@ -22,6 +22,11 @@ export interface VideoStreamSummary {
   topic: string;
 }
 
+export interface JointStateStreamSummary {
+  channelId: number;
+  topic: string;
+}
+
 export interface RecordingSummary {
   sourceName: string;
   sourceSizeBytes: string;
@@ -35,9 +40,16 @@ export interface RecordingSummary {
   channels: ChannelSummary[];
   schemas: SchemaSummary[];
   videoStreams: VideoStreamSummary[];
+  jointStateStreams: JointStateStreamSummary[];
   attachmentCount: number;
   metadataCount: number;
   metadataError?: string;
+}
+
+export interface RecordingPreferences {
+  selectedTopics: string[];
+  videoTopic?: string;
+  jointStateTopic?: string;
 }
 
 interface WebviewMessageBase {
@@ -48,9 +60,14 @@ interface WebviewMessageBase {
 
 export type WebviewToHostMessage =
   | (WebviewMessageBase & { type: "ready" })
-  | (WebviewMessageBase & { type: "selectVideoStream"; channelId: number })
+  | (WebviewMessageBase & { type: "selectVideoStream"; channelId: number; remember?: boolean })
   | (WebviewMessageBase & { type: "requestFrame"; frameIndex: number })
   | (WebviewMessageBase & { type: "seekFrame"; timestampNs: string })
+  | (WebviewMessageBase & { type: "selectJointStateStream"; channelId: number; remember?: boolean })
+  | (WebviewMessageBase & { type: "seekJointState"; timestampNs: string })
+  | (WebviewMessageBase & { type: "rememberTopicSelection"; selectedTopics: string[] })
+  | (WebviewMessageBase & { type: "selectUrdf" })
+  | (WebviewMessageBase & { type: "loadRememberedUrdf" })
   | (WebviewMessageBase & {
       type: "exportSlice";
       startNs: string;
@@ -69,7 +86,11 @@ interface HostMessageBase {
 
 export type HostToWebviewMessage =
   | (HostMessageBase & { type: "loadingState"; message: string })
-  | (HostMessageBase & { type: "recordingLoaded"; recording: RecordingSummary })
+  | (HostMessageBase & {
+      type: "recordingLoaded";
+      recording: RecordingSummary;
+      preferences?: RecordingPreferences;
+    })
   | (HostMessageBase & {
       type: "videoIndexState";
       channelId: number;
@@ -92,6 +113,35 @@ export type HostToWebviewMessage =
       format: string;
       mimeType: "image/jpeg" | "image/png";
       image: ArrayBuffer;
+    })
+  | (HostMessageBase & {
+      type: "jointStateIndexState";
+      channelId: number;
+      state: "indexing" | "ready" | "empty";
+      messageCount?: number;
+      firstLogTimeNs?: string;
+      lastLogTimeNs?: string;
+      progress?: number;
+    })
+  | (HostMessageBase & {
+      type: "jointStateResult";
+      channelId: number;
+      state: "ready" | "noState";
+      logTimeNs?: string;
+      publishTimeNs?: string;
+      captureTimeNs?: string;
+      sequence?: number;
+      names?: string[];
+      positions?: number[];
+    })
+  | (HostMessageBase & {
+      type: "robotModelState";
+      state: "empty" | "loading" | "ready" | "error";
+      modelName?: string;
+      sourceUri?: string;
+      urdfText?: string;
+      warnings?: string[];
+      message?: string;
     })
   | (HostMessageBase & {
       type: "exportState";
@@ -128,9 +178,13 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
   switch (value.type) {
     case "ready":
     case "reloadSource":
+    case "selectUrdf":
+    case "loadRememberedUrdf":
       return value as unknown as WebviewToHostMessage;
     case "selectVideoStream":
-      return Number.isInteger(value.channelId) && Number(value.channelId) >= 0
+    case "selectJointStateStream":
+      return Number.isInteger(value.channelId) && Number(value.channelId) >= 0 &&
+        (value.remember === undefined || typeof value.remember === "boolean")
         ? (value as unknown as WebviewToHostMessage)
         : undefined;
     case "requestFrame":
@@ -138,7 +192,12 @@ export function parseWebviewMessage(value: unknown): WebviewToHostMessage | unde
         ? (value as unknown as WebviewToHostMessage)
         : undefined;
     case "seekFrame":
+    case "seekJointState":
       return isDecimalNanoseconds(value.timestampNs) ? (value as unknown as WebviewToHostMessage) : undefined;
+    case "rememberTopicSelection":
+      return Array.isArray(value.selectedTopics) && value.selectedTopics.every((topic) => typeof topic === "string")
+        ? (value as unknown as WebviewToHostMessage)
+        : undefined;
     case "cancelOperation":
       return typeof value.operationId === "string" ? (value as unknown as WebviewToHostMessage) : undefined;
     case "exportSlice": {
@@ -179,11 +238,33 @@ export interface WorkerFrameResult {
   image: Uint8Array;
 }
 
+export interface WorkerJointStateIndexResult {
+  channelId: number;
+  messageCount: number;
+  firstLogTimeNs?: string;
+  lastLogTimeNs?: string;
+}
+
+export type WorkerJointStateReadResult =
+  | { state: "noState"; channelId: number }
+  | {
+      state: "ready";
+      channelId: number;
+      logTimeNs: string;
+      publishTimeNs: string;
+      captureTimeNs: string;
+      sequence: number;
+      names: string[];
+      positions: number[];
+    };
+
 export type WorkerRequest =
   | { type: "load"; requestId: string; generation: number; path: string }
   | { type: "indexVideo"; requestId: string; generation: number; channelId: number }
   | { type: "readFrame"; requestId: string; generation: number; channelId: number; frameIndex: number }
   | { type: "seekFrame"; requestId: string; generation: number; channelId: number; timestampNs: string }
+  | { type: "indexJointStates"; requestId: string; generation: number; channelId: number }
+  | { type: "readJointStateAt"; requestId: string; generation: number; channelId: number; timestampNs: string }
   | {
       type: "export";
       requestId: string;
@@ -205,7 +286,7 @@ export type WorkerResponse =
       type: "progress";
       requestId: string;
       generation: number;
-      operation: "load" | "videoIndex" | "export";
+      operation: "load" | "videoIndex" | "jointStateIndex" | "export";
       progress?: number;
       message: string;
     };

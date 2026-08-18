@@ -1,7 +1,7 @@
 {
   "name": "mcap-slice",
   "displayName": "MCAP Slice",
-  "description": "Preview and export time/topic slices from local MCAP recordings.",
+  "description": "Preview video and URDF robot state, then export time/topic slices from MCAP recordings.",
   "version": "0.1.1",
   "publisher": "TANG617",
   "license": "MIT",
@@ -35,7 +35,9 @@
   "activationEvents": [
     "onCustomEditor:mcapSlice.editor",
     "onCommand:mcapSlice.exportSlice",
-    "onCommand:mcapSlice.reloadSource"
+    "onCommand:mcapSlice.reloadSource",
+    "onCommand:mcapSlice.selectUrdf",
+    "onCommand:mcapSlice.clearRobotAssetCache"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -74,6 +76,17 @@
         "title": "Reload Source",
         "category": "MCAP Slice",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "mcapSlice.selectUrdf",
+        "title": "Load or Change URDF…",
+        "category": "MCAP Slice",
+        "icon": "$(symbol-structure)"
+      },
+      {
+        "command": "mcapSlice.clearRobotAssetCache",
+        "title": "Clear Robot Asset Cache",
+        "category": "MCAP Slice"
       }
     ],
     "menus": {
@@ -87,8 +100,27 @@
           "command": "mcapSlice.reloadSource",
           "when": "activeCustomEditorId == mcapSlice.editor",
           "group": "navigation@2"
+        },
+        {
+          "command": "mcapSlice.selectUrdf",
+          "when": "activeCustomEditorId == mcapSlice.editor",
+          "group": "navigation@3"
         }
       ]
+    },
+    "configuration": {
+      "title": "MCAP Slice",
+      "properties": {
+        "mcapSlice.urdfPackageRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "description": "Ordered directories used to resolve package:// URDF mesh references. Each entry may be a ROS package directory or a directory containing packages."
+        }
+      }
     }
   },
   "scripts": {
@@ -101,23 +133,28 @@
     "test": "npm run build && vitest run",
     "test:watch": "vitest",
     "test:integration": "npm run build && node tests/integration/run.mjs",
-    "package": "npm run build && vsce package --out ../dist/mcap-slice-vscode.vsix",
+    "package": "npm run build && node -e \"require('node:fs').mkdirSync('../dist',{recursive:true})\" && vsce package --out ../dist/mcap-slice-vscode.vsix",
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {
     "@foxglove/wasm-lz4": "^1.0.2",
-    "@foxglove/wasm-zstd": "^1.0.1"
+    "@foxglove/wasm-zstd": "^1.0.1",
+    "@xmldom/xmldom": "^0.8.14",
+    "three": "^0.163.0",
+    "urdf-loader": "^0.12.7"
   },
   "devDependencies": {
     "@eslint/js": "^9.34.0",
-    "@testing-library/jest-dom": "^6.8.0",
-    "@testing-library/react": "^16.3.0",
     "@mcap/core": "^2.2.1",
     "@mcap/nodejs": "^1.1.0",
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
+    "@types/jsdom": "^21.1.7",
     "@types/lz4js": "^0.2.2",
     "@types/node": "^22.17.2",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
+    "@types/three": "^0.163.0",
     "@types/vscode": "^1.95.0",
     "@vitejs/plugin-react": "^5.2.0",
     "@vscode/test-electron": "^2.5.2",

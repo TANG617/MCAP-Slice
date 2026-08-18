@@ -6,13 +6,15 @@ import type {
   Compression,
   RecordingSummary,
   WorkerFrameResult,
+  WorkerJointStateIndexResult,
+  WorkerJointStateReadResult,
   WorkerLoadResult,
   WorkerVideoIndexResult
 } from "./shared/protocol";
 import { McapWorkerClient } from "./workerClient";
 
 export interface DocumentProgress {
-  operation: "load" | "videoIndex" | "export";
+  operation: "load" | "videoIndex" | "jointStateIndex" | "export";
   message: string;
   progress?: number;
   requestId: string;
@@ -104,6 +106,30 @@ export class McapDocument implements vscode.CustomDocument {
       timestampNs
     });
     return result.frameIndex;
+  }
+
+  public async indexJointStates(
+    channelId: number,
+    onProgress?: (progress: DocumentProgress) => void
+  ): Promise<WorkerJointStateIndexResult> {
+    this.#ensureUsable();
+    const requestId = this.#worker.nextRequestId();
+    return await this.#worker.call<WorkerJointStateIndexResult>(
+      { type: "indexJointStates", requestId, generation: this.generation, channelId },
+      (message) => onProgress?.({ ...message, requestId })
+    );
+  }
+
+  public async readJointStateAt(channelId: number, timestampNs: string): Promise<WorkerJointStateReadResult> {
+    this.#ensureUsable();
+    const requestId = this.#worker.nextRequestId();
+    return await this.#worker.call<WorkerJointStateReadResult>({
+      type: "readJointStateAt",
+      requestId,
+      generation: this.generation,
+      channelId,
+      timestampNs
+    });
   }
 
   public startExport(

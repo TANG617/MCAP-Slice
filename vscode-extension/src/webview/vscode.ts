@@ -6,4 +6,9 @@ interface VsCodeApi<State = unknown> {
 
 declare function acquireVsCodeApi<State = unknown>(): VsCodeApi<State>;
 
-export const vscode = acquireVsCodeApi();
+export interface WebviewState {
+  exportSettingsWidth?: number;
+  [key: string]: unknown;
+}
+
+export const vscode = acquireVsCodeApi<WebviewState>();

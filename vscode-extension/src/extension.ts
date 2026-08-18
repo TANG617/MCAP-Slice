@@ -3,32 +3,42 @@ import path from "node:path";
 import * as vscode from "vscode";
 
 import { McapDocument } from "./mcapDocument";
+import { RobotAssetService } from "./robotAssetService";
 import {
   parseWebviewMessage,
   type HostToWebviewMessage,
+  type RecordingPreferences,
   type WebviewToHostMessage,
   type WorkerFrameResult
 } from "./shared/protocol";
 import { WorkerOperationError } from "./workerClient";
 
 const VIEW_TYPE = "mcapSlice.editor";
+const SELECTED_TOPICS_KEY = "mcapSlice.rememberedExportTopics";
+const VIDEO_TOPIC_KEY = "mcapSlice.rememberedVideoTopic";
+const JOINT_STATE_TOPIC_KEY = "mcapSlice.rememberedJointStateTopic";
 
 interface EditorSession {
   document: McapDocument;
   panel: vscode.WebviewPanel;
   disposables: vscode.Disposable[];
   selectedVideoChannel?: number;
+  selectedJointStateChannel?: number;
+  selectedUrdf?: vscode.Uri;
 }
 
 class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocument> {
   readonly #sessions = new Set<EditorSession>();
+  readonly #robotAssets: RobotAssetService;
   #activeSession: EditorSession | undefined;
 
-  public constructor(private readonly context: vscode.ExtensionContext) {}
+  public constructor(private readonly context: vscode.ExtensionContext) {
+    this.#robotAssets = new RobotAssetService(context);
+  }
 
   public openCustomDocument(uri: vscode.Uri): Promise<McapDocument> {
-    if (uri.scheme !== "file") {
-      throw new Error("MCAP Slice v0.1.0 only supports local or remote file-system resources.");
+    if (!isHostFileUri(uri)) {
+      throw new Error("MCAP Slice only supports local or remote file-system resources.");
     }
     return Promise.resolve(new McapDocument(uri, this.context.extensionPath));
   }
@@ -40,7 +50,7 @@ class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocu
     const webviewRoot = vscode.Uri.joinPath(this.context.extensionUri, "dist", "webview");
     webviewPanel.webview.options = {
       enableScripts: true,
-      localResourceRoots: [webviewRoot]
+      localResourceRoots: [webviewRoot, this.context.globalStorageUri]
     };
     webviewPanel.webview.html = this.#webviewHtml(webviewPanel.webview, webviewRoot);
 
@@ -96,6 +106,17 @@ class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocu
     }
   }
 
+  public selectActiveUrdf(): void {
+    if (this.#activeSession) {
+      void this.#selectUrdf(this.#activeSession, "editor-command");
+    }
+  }
+
+  public async clearRobotAssetCache(): Promise<void> {
+    await this.#robotAssets.clearCache();
+    void vscode.window.showInformationMessage("MCAP Slice robot asset cache cleared.");
+  }
+
   public testState(): { active: boolean; generation?: number; loaded?: boolean; stale?: boolean } {
     const session = this.#activeSession;
     return session
@@ -117,7 +138,8 @@ class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocu
               type: "recordingLoaded",
               requestId: message.requestId,
               generation: session.document.generation,
-              recording: session.document.recording
+              recording: session.document.recording,
+              preferences: this.#recordingPreferences()
             });
           } else {
             await this.#load(session, message.requestId);
@@ -129,13 +151,19 @@ class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocu
         case "cancelOperation":
           session.document.cancel(message.operationId);
           return;
+        case "selectUrdf":
+          await this.#selectUrdf(session, message.requestId);
+          return;
+        case "loadRememberedUrdf":
+          await this.#loadRememberedUrdf(session, message.requestId);
+          return;
       }
 
       if (message.generation !== session.document.generation) {
         return;
       }
       if (message.type === "selectVideoStream") {
-        await this.#indexVideo(session, message.requestId, message.channelId);
+        await this.#indexVideo(session, message.requestId, message.channelId, message.remember !== false);
       } else if (message.type === "requestFrame") {
         this.#sendFrame(
           session,
@@ -146,10 +174,35 @@ class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocu
         const channelId = this.#selectedVideoChannel(session);
         const frameIndex = await session.document.seekFrame(channelId, message.timestampNs);
         this.#sendFrame(session, message.requestId, await session.document.readFrame(channelId, frameIndex));
+      } else if (message.type === "selectJointStateStream") {
+        await this.#indexJointStates(session, message.requestId, message.channelId, message.remember !== false);
+      } else if (message.type === "rememberTopicSelection") {
+        await this.context.workspaceState.update(
+          SELECTED_TOPICS_KEY,
+          [...new Set(message.selectedTopics)].sort()
+        );
+      } else if (message.type === "seekJointState") {
+        const result = await session.document.readJointStateAt(
+          this.#selectedJointStateChannel(session),
+          message.timestampNs
+        );
+        this.#post(session, {
+          type: "jointStateResult",
+          requestId: message.requestId,
+          generation: session.document.generation,
+          ...result
+        });
       } else if (message.type === "exportSlice") {
         await this.#export(session, message);
       }
     } catch (error) {
+      if (
+        message.type === "selectJointStateStream" &&
+        (session.selectedJointStateChannel !== message.channelId ||
+          session.document.generation !== message.generation)
+      ) {
+        return;
+      }
       if (error instanceof WorkerOperationError && (error.code === "CANCELED" || error.code === "STALE_SESSION")) {
         if (error.code === "CANCELED") {
           this.#post(session, {
@@ -182,15 +235,20 @@ class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocu
         type: "recordingLoaded",
         requestId,
         generation: session.document.generation,
-        recording
+        recording,
+        preferences: this.#recordingPreferences()
       });
     } catch (error) {
       this.#postError(session, "load", errorMessage(error), requestId, nextGeneration);
     }
   }
 
-  async #indexVideo(session: EditorSession, requestId: string, channelId: number): Promise<void> {
+  async #indexVideo(session: EditorSession, requestId: string, channelId: number, remember: boolean): Promise<void> {
     session.selectedVideoChannel = channelId;
+    const topic = session.document.recording?.videoStreams.find((stream) => stream.channelId === channelId)?.topic;
+    if (remember && topic) {
+      await this.context.workspaceState.update(VIDEO_TOPIC_KEY, topic);
+    }
     this.#post(session, {
       type: "videoIndexState",
       requestId,
@@ -220,6 +278,117 @@ class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocu
       lastLogTimeNs: result.lastLogTimeNs,
       progress: 1
     });
+  }
+
+  async #indexJointStates(
+    session: EditorSession,
+    requestId: string,
+    channelId: number,
+    remember: boolean
+  ): Promise<void> {
+    session.selectedJointStateChannel = channelId;
+    const topic = session.document.recording?.jointStateStreams.find((stream) => stream.channelId === channelId)?.topic;
+    if (remember && topic) {
+      await this.context.workspaceState.update(JOINT_STATE_TOPIC_KEY, topic);
+    }
+    const generation = session.document.generation;
+    this.#post(session, {
+      type: "jointStateIndexState",
+      requestId,
+      generation: session.document.generation,
+      channelId,
+      state: "indexing",
+      progress: 0
+    });
+    const result = await session.document.indexJointStates(channelId, (state) => {
+      if (session.selectedJointStateChannel !== channelId || session.document.generation !== generation) {
+        return;
+      }
+      this.#post(session, {
+        type: "jointStateIndexState",
+        requestId,
+        generation: session.document.generation,
+        channelId,
+        state: "indexing",
+        progress: state.progress
+      });
+    });
+    if (session.selectedJointStateChannel !== channelId || session.document.generation !== generation) {
+      return;
+    }
+    this.#post(session, {
+      type: "jointStateIndexState",
+      requestId,
+      generation: session.document.generation,
+      channelId,
+      state: result.messageCount === 0 ? "empty" : "ready",
+      messageCount: result.messageCount,
+      firstLogTimeNs: result.firstLogTimeNs,
+      lastLogTimeNs: result.lastLogTimeNs,
+      progress: 1
+    });
+  }
+
+  async #selectUrdf(session: EditorSession, requestId: string): Promise<void> {
+    const remembered = this.#robotAssets.rememberedUrdf();
+    const selected = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: false,
+      defaultUri: remembered,
+      filters: { "URDF robot models": ["urdf"] },
+      openLabel: "Load URDF"
+    });
+    if (selected?.[0]) {
+      await this.#loadUrdf(session, requestId, selected[0]);
+    }
+  }
+
+  async #loadRememberedUrdf(session: EditorSession, requestId: string): Promise<void> {
+    const remembered = session.selectedUrdf ?? this.#robotAssets.rememberedUrdf();
+    if (!remembered) {
+      this.#post(session, {
+        type: "robotModelState",
+        requestId,
+        generation: session.document.generation,
+        state: "empty"
+      });
+      return;
+    }
+    await this.#loadUrdf(session, requestId, remembered);
+  }
+
+  async #loadUrdf(session: EditorSession, requestId: string, uri: vscode.Uri): Promise<void> {
+    session.selectedUrdf = uri;
+    this.#post(session, {
+      type: "robotModelState",
+      requestId,
+      generation: session.document.generation,
+      state: "loading",
+      sourceUri: uri.toString(),
+      message: `Preparing ${path.basename(uri.fsPath)}…`
+    });
+    try {
+      const prepared = await this.#robotAssets.prepareUrdf(uri, session.panel.webview);
+      await this.#robotAssets.rememberUrdf(uri);
+      this.#post(session, {
+        type: "robotModelState",
+        requestId,
+        generation: session.document.generation,
+        state: "ready",
+        ...prepared
+      });
+    } catch (error) {
+      this.#post(session, {
+        type: "robotModelState",
+        requestId,
+        generation: session.document.generation,
+        state: "error",
+        sourceUri: uri.toString(),
+        modelName: path.basename(uri.fsPath),
+        message: errorMessage(error)
+      });
+    }
   }
 
   #sendFrame(session: EditorSession, requestId: string, frame: WorkerFrameResult): void {
@@ -274,7 +443,7 @@ class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocu
       });
       return;
     }
-    if (destination.scheme !== "file") {
+    if (!isHostFileUri(destination)) {
       throw new Error("MCAP Slice can only export to a local or remote file-system path.");
     }
     const normalizedSource = path.resolve(session.document.uri.fsPath);
@@ -356,6 +525,27 @@ class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocu
     return channelId;
   }
 
+  #selectedJointStateChannel(session: EditorSession): number {
+    const channelId = session.selectedJointStateChannel;
+    if (channelId === undefined) {
+      throw new Error("Select and index a JointState stream before requesting a robot configuration.");
+    }
+    return channelId;
+  }
+
+  #recordingPreferences(): RecordingPreferences {
+    const selectedTopics = this.context.workspaceState.get<unknown>(SELECTED_TOPICS_KEY);
+    const videoTopic = this.context.workspaceState.get<unknown>(VIDEO_TOPIC_KEY);
+    const jointStateTopic = this.context.workspaceState.get<unknown>(JOINT_STATE_TOPIC_KEY);
+    return {
+      selectedTopics: Array.isArray(selectedTopics)
+        ? selectedTopics.filter((topic): topic is string => typeof topic === "string")
+        : [],
+      videoTopic: typeof videoTopic === "string" ? videoTopic : undefined,
+      jointStateTopic: typeof jointStateTopic === "string" ? jointStateTopic : undefined
+    };
+  }
+
   #post(session: EditorSession, message: HostToWebviewMessage): void {
     void session.panel.webview.postMessage(message);
   }
@@ -379,7 +569,7 @@ class McapEditorProvider implements vscode.CustomReadonlyEditorProvider<McapDocu
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} blob:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} blob: data:; connect-src ${webview.cspSource} blob:; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
   <link rel="stylesheet" href="${styleUri.toString()}">
   <title>MCAP Slice</title>
 </head>
@@ -404,6 +594,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isHostFileUri(uri: vscode.Uri): boolean {
+  return uri.scheme === "file" || uri.scheme === "vscode-remote";
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new McapEditorProvider(context);
   context.subscriptions.push(
@@ -412,7 +606,9 @@ export function activate(context: vscode.ExtensionContext): void {
       webviewOptions: { retainContextWhenHidden: false }
     }),
     vscode.commands.registerCommand("mcapSlice.exportSlice", () => provider.requestActiveExport()),
-    vscode.commands.registerCommand("mcapSlice.reloadSource", () => provider.reloadActive())
+    vscode.commands.registerCommand("mcapSlice.reloadSource", () => provider.reloadActive()),
+    vscode.commands.registerCommand("mcapSlice.selectUrdf", () => provider.selectActiveUrdf()),
+    vscode.commands.registerCommand("mcapSlice.clearRobotAssetCache", () => provider.clearRobotAssetCache())
   );
   if (context.extensionMode === vscode.ExtensionMode.Test) {
     context.subscriptions.push(vscode.commands.registerCommand("mcapSlice._testState", () => provider.testState()));

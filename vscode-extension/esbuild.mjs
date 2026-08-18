@@ -23,7 +23,9 @@ const configs = [
 ];
 
 await mkdir("media", { recursive: true });
+await mkdir("dist", { recursive: true });
 await copyFile(path.resolve("..", "src", "mcap_slice.png"), path.resolve("media", "mcap_slice.png"));
+await copyFile(path.resolve("..", "THIRD_PARTY_NOTICES.md"), path.resolve("dist", "THIRD_PARTY_NOTICES.md"));
 
 if (watch) {
   const contexts = await Promise.all(configs.map((config) => esbuild.context(config)));
