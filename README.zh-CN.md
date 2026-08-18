@@ -2,9 +2,9 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-MCAP Slice 是一款独立桌面应用，用于可视化裁剪 MCAP 录制文件，并只导出需要的
-话题。它在同一个原生 Qt 界面中提供类似视频剪辑的时间范围编辑、精确的 RFC
-3339 时间戳、文件夹录制导航、话题过滤和可追溯的输出 Metadata。
+MCAP Slice 提供独立桌面应用和 VS Code 插件，用于可视化裁剪 MCAP 录制文件，
+并只导出需要的话题。两种形态都将源文件保持为只读，并在工作区所在主机本地完成
+所有处理。
 
 应用基于 Qt 6 和 MCAP C++ 库构建，安装和运行都不需要 ROS。
 
@@ -21,8 +21,19 @@ MCAP Slice 是一款独立桌面应用，用于可视化裁剪 MCAP 录制文件
 | macOS 12 或更高版本，Intel | x86_64 macOS DMG |
 | Windows，x86_64 | Windows 桌面安装包 |
 | Ubuntu，x86_64 | AppImage |
+| VS Code 1.95 或更高版本 | `mcap-slice-vscode.vsix` |
 
 本文档不绑定具体发布版本或文件名，请按照平台和处理器架构选择对应产物。
+
+## VS Code 插件
+
+在 Extensions 视图安装 VSIX 后，从 Explorer 打开一个带索引的 `.mcap` 文件。
+插件会作为默认只读编辑器，提供录制信息、Topic/Schema 查看、`[In, Out)` 时间
+范围编辑、ROS 2 CompressedImage 单帧预览，以及 Zstandard、LZ4 或无压缩导出。
+
+插件支持本地桌面 VS Code、Remote - SSH、WSL 和 Dev Container。远程录制始终
+保留在远程工作区主机。v0.1.x 不支持浏览器版 VS Code、虚拟工作区或无索引
+MCAP。使用和开发说明见 [VS Code 插件 README](vscode-extension/README.md)。
 
 ## 快速开始
 
@@ -80,6 +91,7 @@ MCAP attachments 当前不会被复制。完成导出并确认结果符合工作
 - [获取支持](SUPPORT.md)
 - [安全策略](SECURITY.md)
 - [第三方许可说明](THIRD_PARTY_NOTICES.md)
+- [VS Code 插件](vscode-extension/README.md)
 
 ## 从源码构建
 

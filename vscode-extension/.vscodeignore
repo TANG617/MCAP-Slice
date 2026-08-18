@@ -1,0 +1,15 @@
+.vscode/**
+src/**
+tests/**
+coverage/**
+node_modules/.cache/**
+node_modules/@xmldom/**
+node_modules/three/**
+node_modules/urdf-loader/**
+*.config.ts
+esbuild.mjs
+tsconfig*.json
+eslint.config.mjs
+package-lock.json
+**/*.map
+**/*.tsbuildinfo

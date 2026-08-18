@@ -54,6 +54,28 @@ MCAP Slice originated from
 copyright 2023 Davide Faconti, under the MIT License. That copyright is
 preserved in the root [LICENSE](LICENSE).
 
+## VS Code extension dependencies
+
+The optional VS Code extension in `vscode-extension/` uses these runtime and
+bundled Webview dependencies:
+
+- `@mcap/core` 2.2.1 and `@mcap/nodejs` 1.1.0 — MIT;
+- `@foxglove/wasm-lz4` 1.0.2 and `@foxglove/wasm-zstd` 1.0.1 — MIT;
+- `lz4js` 0.2.0 — ISC;
+- Three.js 0.163.0 — MIT;
+- `urdf-loader` 0.12.7 — Apache-2.0;
+- `@xmldom/xmldom` 0.8.14 — MIT; and
+- React and React DOM 19.2.8 — MIT.
+
+The Apache-2.0
+[robot_viewer](https://github.com/TANG617/robot_viewer) project served as a
+design reference for Web-based URDF visualization. No `robot_viewer` source is
+vendored in this repository.
+
+Exact transitive versions and integrity hashes are recorded in
+`vscode-extension/package-lock.json`. Build and test-only npm packages remain
+under their respective licenses.
+
 ## Trademarks
 
 Qt and associated marks belong to The Qt Company and their respective owners.

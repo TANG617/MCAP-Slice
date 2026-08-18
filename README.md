@@ -2,10 +2,10 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-MCAP Slice is a standalone desktop application for visually trimming MCAP
-recordings and exporting only the topics you need. It combines a video-style
-range editor, precise RFC 3339 timestamps, folder-based recording navigation,
-topic filtering, and traceable output Metadata in one native Qt interface.
+MCAP Slice provides a standalone desktop application and a VS Code extension
+for visually trimming MCAP recordings and exporting only the topics you need.
+Both keep the source file read-only and process recordings on the machine that
+owns the workspace.
 
 It is built with Qt 6 and the MCAP C++ library. ROS is not required to install
 or run the application.
@@ -23,9 +23,24 @@ Download the package for your platform from
 | macOS 12 or later, Intel | macOS DMG for x86_64 |
 | Windows, x86_64 | Windows desktop package |
 | Ubuntu, x86_64 | AppImage |
+| VS Code 1.95 or later | `mcap-slice-vscode.vsix` |
 
 Release assets are version-independent in this documentation. Choose the asset
 whose platform and architecture match your system.
+
+## VS Code extension
+
+Install the VSIX from the Extensions view, then open an indexed `.mcap` file
+from the Explorer. The extension becomes the default read-only editor and
+provides recording details, Topic/Schema inspection, `[In, Out)` range editing,
+single-frame ROS 2 CompressedImage preview, and Zstandard/LZ4/uncompressed
+export.
+
+The extension supports local desktop VS Code, Remote - SSH, WSL, and Dev
+Containers. Remote recordings stay on the remote workspace host. Browser VS
+Code, virtual workspaces, and unindexed MCAP files are not supported in v0.1.x.
+See the [extension README](vscode-extension/README.md) for usage and development
+instructions.
 
 ## Quick start
 
@@ -96,6 +111,7 @@ directly inside the selected folder.
 - [Support](SUPPORT.md)
 - [Security policy](SECURITY.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
+- [VS Code extension](vscode-extension/README.md)
 
 ## Build from source
 
