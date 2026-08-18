@@ -1,0 +1,12 @@
+.vscode/**
+src/**
+tests/**
+coverage/**
+node_modules/.cache/**
+*.config.ts
+esbuild.mjs
+tsconfig*.json
+eslint.config.mjs
+package-lock.json
+**/*.map
+**/*.tsbuildinfo

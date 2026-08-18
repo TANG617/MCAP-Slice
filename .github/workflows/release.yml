@@ -232,6 +232,50 @@ jobs:
             "$RUNNER_TEMP/mcap-slice-signing.p12" \
             "$RUNNER_TEMP"/AuthKey_*.p8
 
+  vscode-extension:
+    name: VS Code extension
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: vscode-extension
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit and worker tests
+        run: npm test
+
+      - name: VS Code integration test
+        run: xvfb-run -a npm run test:integration
+
+      - name: Package VSIX
+        run: npm run package
+
+      - name: Upload VSIX
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-vscode
+          path: dist/mcap-slice-vscode.vsix
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: Update Continuous Release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -239,6 +283,7 @@ jobs:
       - linux
       - windows
       - macos
+      - vscode-extension
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -274,6 +319,7 @@ jobs:
             MCAP-Slice-Windows-x86_64.zip
             MCAP-Slice-macOS-arm64.dmg
             MCAP-Slice-macOS-x86_64.dmg
+            mcap-slice-vscode.vsix
           )
           for asset in "${assets[@]}"; do
             if [[ ! -s "$asset" ]]; then
@@ -334,5 +380,6 @@ jobs:
             release-assets/MCAP-Slice-Windows-x86_64.zip \
             release-assets/MCAP-Slice-macOS-arm64.dmg \
             release-assets/MCAP-Slice-macOS-x86_64.dmg \
+            release-assets/mcap-slice-vscode.vsix \
             release-assets/SHA256SUMS.txt \
             --clobber

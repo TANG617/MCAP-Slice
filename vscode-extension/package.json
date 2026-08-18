@@ -1,0 +1,137 @@
+{
+  "name": "mcap-slice",
+  "displayName": "MCAP Slice",
+  "description": "Preview and export time/topic slices from local MCAP recordings.",
+  "version": "0.1.1",
+  "publisher": "TANG617",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TANG617/MCAP-Slice.git",
+    "directory": "vscode-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/TANG617/MCAP-Slice/issues"
+  },
+  "homepage": "https://github.com/TANG617/MCAP-Slice#readme",
+  "icon": "media/mcap_slice.png",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "mcap",
+    "ros",
+    "robotics",
+    "recording"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onCustomEditor:mcapSlice.editor",
+    "onCommand:mcapSlice.exportSlice",
+    "onCommand:mcapSlice.reloadSource"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "MCAP Slice requires random access to a local or remote file-system path."
+    }
+  },
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "mcapSlice.editor",
+        "displayName": "MCAP Slice",
+        "selector": [
+          {
+            "filenamePattern": "*.mcap"
+          },
+          {
+            "filenamePattern": "*.MCAP"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "mcapSlice.exportSlice",
+        "title": "Export Slice…",
+        "category": "MCAP Slice",
+        "icon": "$(export)"
+      },
+      {
+        "command": "mcapSlice.reloadSource",
+        "title": "Reload Source",
+        "category": "MCAP Slice",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "mcapSlice.exportSlice",
+          "when": "activeCustomEditorId == mcapSlice.editor",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mcapSlice.reloadSource",
+          "when": "activeCustomEditorId == mcapSlice.editor",
+          "group": "navigation@2"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && node esbuild.mjs && vite build",
+    "watch:extension": "node esbuild.mjs --watch",
+    "watch:webview": "vite build --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "npm run build && vitest run",
+    "test:watch": "vitest",
+    "test:integration": "npm run build && node tests/integration/run.mjs",
+    "package": "npm run build && vsce package --out ../dist/mcap-slice-vscode.vsix",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "@foxglove/wasm-lz4": "^1.0.2",
+    "@foxglove/wasm-zstd": "^1.0.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.34.0",
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
+    "@mcap/core": "^2.2.1",
+    "@mcap/nodejs": "^1.1.0",
+    "@types/lz4js": "^0.2.2",
+    "@types/node": "^22.17.2",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@types/vscode": "^1.95.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.9",
+    "eslint": "^9.34.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "jsdom": "^26.1.0",
+    "lz4js": "^0.2.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.41.0",
+    "vite": "^7.1.3",
+    "vitest": "^3.2.4"
+  }
+}
